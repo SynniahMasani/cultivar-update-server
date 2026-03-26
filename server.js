@@ -1,243 +1,192 @@
 // ================================================================
-// THE CULTIVAR — Update Server
-// Hosted on Railway (Node.js)
+// TheCultivar_UpdateClient.lsl
+// ================================================================
+// SETUP INSTRUCTIONS:
+// Change g_itemName below to match the item this script lives in.
+// Each kit item needs its own copy of this script with the correct
+// g_itemName set. Examples:
+//   "TC_HUD"
+//   "TC_GrowLight"
+//   "TC_WeedJar"
+//   "TC_BaggingTable"
+//   "TC_RollingTable"
+//   "TC_StashBox"
+//   "TC_Plant"
+//   "TC_SessionObject"
 // ================================================================
 
-const express = require("express");
-const fs      = require("fs");
-const app     = express();
+integer TC_UPDATE_CHAN     = -777333111;
+string  TC_CURRENT_VERSION = "1.0.0";
 
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-
-// ----------------------------------------------------------------
-// CONFIGURATION — Edit these values
-// ----------------------------------------------------------------
-
-// Bump this string every time you release an update
-const CURRENT_VERSION = "1.0.0";
-
-// Your SL avatar key (Synniah Masani) — only this key gets admin notifications
-const STORE_OWNER_KEY = "2b726a23-e792-40d0-8a20-baeaa49c1b03";
-
-// Simple admin password for the web dashboard
-const ADMIN_PASSWORD = "12060404us";
-
-// Path to persistent data file
-const DATA_FILE = "./data.json";
+string  g_itemName      = "TC_Item";   // SET THIS per item
+string  g_version       = "1.0.0";     // Current version of this item
+integer g_scriptPin     = 0;           // Generated from object key
+integer g_replyChannel  = 0;           // Private reply channel
+integer g_listenReply   = 0;           // Listen handle for server reply
+integer g_listenConfirm = 0;           // Listen handle for update dialog
+integer DCHAN_UPDATE    = -771001;     // Dialog channel for update permission
 
 // ----------------------------------------------------------------
-// DATA HELPERS — Reads and writes owner registry to disk
+// derivePin — generates a consistent positive non-zero pin from
+// this object's key so the server can inject scripts remotely
 // ----------------------------------------------------------------
-
-function loadData()
+integer derivePin()
 {
-    if (!fs.existsSync(DATA_FILE))
-    {
-        return { owners: [], objects: [] };
-    }
-    try
-    {
-        return JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
-    }
-    catch (e)
-    {
-        return { owners: [], objects: [] };
-    }
-}
-
-function saveData(data)
-{
-    fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
+    string keyStr = llGetSubString((string)llGetKey(), 0, 7);
+    keyStr = llDumpList2String(llParseString2List(keyStr, ["-"], []), "");
+    integer pin = (integer)("0x" + keyStr);
+    if (pin < 0)
+        pin = pin * -1;
+    if (pin == 0)
+        pin = 12345;
+    return pin;
 }
 
 // ----------------------------------------------------------------
-// ROUTES
+// pingServer — broadcasts a version check to the update server
 // ----------------------------------------------------------------
-
-// Health check — Railway uses this to confirm server is alive
-app.get("/", (req, res) =>
+pingServer()
 {
-    res.send("The Cultivar Update Server is running. Version: " + CURRENT_VERSION);
-});
+    if (g_listenReply)
+    {
+        llListenRemove(g_listenReply);
+        g_listenReply = 0;
+    }
+
+    g_replyChannel = -1000000 - (integer)llFrand(999999.0);
+    g_listenReply  = llListen(g_replyChannel, "", NULL_KEY, "");
+
+    llSetRemoteScriptAccessPin(g_scriptPin);
+
+    llRegionSay(TC_UPDATE_CHAN,
+        "TC_UPDATE_PING|" + g_version + "|" +
+        (string)llGetOwner() + "|" +
+        llGetDisplayName(llGetOwner()) + "|" +
+        (string)llGetKey() + "|" +
+        g_itemName + "|" +
+        (string)g_scriptPin + "|" +
+        (string)g_replyChannel);
+
+    // 30-second timeout — silently remove listener if no server response
+    llSetTimerEvent(30.0);
+}
 
 // ----------------------------------------------------------------
-// POST /check — Called by LSL UpdateClient on every rez
-//
-// Expected body params (sent as form data from llHTTPRequest):
-//   owner_key    — SL avatar UUID of the item owner
-//   owner_name   — Display name
-//   object_key   — UUID of the rezzed object
-//   item_name    — e.g. "TC_HUD", "TC_GrowLight"
-//   version      — Client's current version string
-//   region       — Region name the object is in
+// showUpdateDialog — asks owner whether to apply the update
 // ----------------------------------------------------------------
-app.post("/check", (req, res) =>
+showUpdateDialog(string newVersion)
 {
-    const ownerKey  = req.body.owner_key  || "";
-    const ownerName = req.body.owner_name || "Unknown";
-    const objectKey = req.body.object_key || "";
-    const itemName  = req.body.item_name  || "Unknown Item";
-    const version   = req.body.version    || "0.0.0";
-    const region    = req.body.region     || "Unknown Region";
-
-    if (!ownerKey || !objectKey)
+    if (g_listenConfirm)
     {
-        return res.status(400).send("INVALID_REQUEST");
+        llListenRemove(g_listenConfirm);
+        g_listenConfirm = 0;
     }
+    g_listenConfirm = llListen(DCHAN_UPDATE, "", llGetOwner(), "");
 
-    const data = loadData();
-    const now  = new Date().toISOString();
+    llDialog(llGetOwner(),
+        "=== THE CULTIVAR UPDATE ===\n\n" +
+        "A new update is available for your " + g_itemName + "!\n\n" +
+        "Current version: " + g_version + "\n" +
+        "New version: " + newVersion + "\n\n" +
+        "Scripts will be replaced in place.\n" +
+        "Your object will stay exactly where it is.",
+        ["Update Now", "Skip"],
+        DCHAN_UPDATE);
+}
 
-    // Register or update owner entry
-    let ownerEntry = data.owners.find(o => o.key === ownerKey);
-    if (!ownerEntry)
-    {
-        ownerEntry = {
-            key:          ownerKey,
-            name:         ownerName,
-            registeredAt: now,
-            items:        []
-        };
-        data.owners.push(ownerEntry);
-        console.log("[NEW OWNER] " + ownerName + " (" + ownerKey + ") — " + itemName);
-    }
-
-    // Track which items this owner has
-    if (!ownerEntry.items.includes(itemName))
-    {
-        ownerEntry.items.push(itemName);
-    }
-    ownerEntry.name     = ownerName;
-    ownerEntry.lastSeen = now;
-
-    // Register or update object entry
-    let objEntry = data.objects.find(o => o.key === objectKey);
-    if (!objEntry)
-    {
-        objEntry = {
-            key:      objectKey,
-            ownerKey: ownerKey,
-            itemName: itemName,
-            version:  version,
-            region:   region,
-            lastSeen: now
-        };
-        data.objects.push(objEntry);
-    }
-    else
-    {
-        objEntry.version  = version;
-        objEntry.region   = region;
-        objEntry.lastSeen = now;
-    }
-
-    saveData(data);
-
-    // Version check response
-    if (version === CURRENT_VERSION)
-    {
-        return res.send("UP_TO_DATE|" + CURRENT_VERSION);
-    }
-    else
-    {
-        return res.send("UPDATE_AVAILABLE|" + CURRENT_VERSION);
-    }
-});
-
-// ----------------------------------------------------------------
-// GET /version — Simple version check endpoint
-// LSL can poll this to just get the current version number
-// ----------------------------------------------------------------
-app.get("/version", (req, res) =>
+// ================================================================
+// DEFAULT STATE
+// ================================================================
+default
 {
-    res.send(CURRENT_VERSION);
-});
-
-// ----------------------------------------------------------------
-// GET /admin — Simple web dashboard (password protected)
-// Visit https://your-railway-url/admin?pw=yourpassword
-// ----------------------------------------------------------------
-app.get("/admin", (req, res) =>
-{
-    if (req.query.pw !== ADMIN_PASSWORD)
+    state_entry()
     {
-        return res.status(401).send("Unauthorized");
+        g_version   = TC_CURRENT_VERSION;
+        g_scriptPin = derivePin();
+        llSetRemoteScriptAccessPin(g_scriptPin);
+
+        // Small delay so the sim has settled after rez before pinging
+        llSetTimerEvent(3.0);
     }
 
-    const data  = loadData();
-    const total = data.owners.length;
-    const objs  = data.objects.length;
-
-    // Build item breakdown
-    const itemCounts = {};
-    data.owners.forEach(o =>
+    timer()
     {
-        o.items.forEach(item =>
+        llSetTimerEvent(0.0);
+
+        // If the reply listener is still open, this is the 30-second timeout
+        if (g_listenReply)
         {
-            itemCounts[item] = (itemCounts[item] || 0) + 1;
-        });
-    });
+            llListenRemove(g_listenReply);
+            g_listenReply = 0;
+            // Server unreachable or offline — fail silently
+            return;
+        }
 
-    let itemRows = "";
-    Object.keys(itemCounts).forEach(item =>
+        // Otherwise this is the initial 3-second startup delay
+        pingServer();
+    }
+
+    listen(integer channel, string name, key id, string msg)
     {
-        itemRows += "<tr><td>" + item + "</td><td>" + itemCounts[item] + "</td></tr>";
-    });
+        list parts = llParseString2List(msg, ["|"], []);
+        string cmd = llList2String(parts, 0);
 
-    let ownerRows = "";
-    data.owners.slice(-50).reverse().forEach(o =>
+        // ---- Reply from server: update is available ----
+        if (channel == g_replyChannel && cmd == "TC_UPDATE_AVAILABLE")
+        {
+            string newVersion = llList2String(parts, 1);
+
+            if (g_listenReply)
+            {
+                llListenRemove(g_listenReply);
+                g_listenReply = 0;
+            }
+
+            // Cancel the 30-second timeout — we got a reply
+            llSetTimerEvent(0.0);
+
+            llRegionSayTo(llGetOwner(), 0,
+                "[The Cultivar] An update is available for your " +
+                g_itemName + " (v" + g_version + " -> v" + newVersion + "). " +
+                "Check your dialog box.");
+
+            showUpdateDialog(newVersion);
+        }
+
+        // ---- Dialog response from owner ----
+        else if (channel == DCHAN_UPDATE)
+        {
+            if (g_listenConfirm)
+            {
+                llListenRemove(g_listenConfirm);
+                g_listenConfirm = 0;
+            }
+
+            if (msg == "Update Now")
+            {
+                llRegionSayTo(llGetOwner(), 0,
+                    "[The Cultivar] Requesting update for " + g_itemName +
+                    "... please stand by.");
+
+                llRegionSay(TC_UPDATE_CHAN,
+                    "TC_UPDATE_CONFIRM|" +
+                    (string)llGetKey() + "|" +
+                    (string)llGetOwner());
+            }
+            else if (msg == "Skip")
+            {
+                llRegionSayTo(llGetOwner(), 0,
+                    "[The Cultivar] Update skipped. You can re-rez this item " +
+                    "later to be prompted again.");
+            }
+        }
+    }
+
+    on_rez(integer start_param)
     {
-        ownerRows += "<tr><td>" + o.name + "</td><td>" + o.key + "</td><td>" +
-                     o.items.join(", ") + "</td><td>" + o.lastSeen + "</td></tr>";
-    });
-
-    res.send(`
-        <html>
-        <head>
-            <title>The Cultivar — Update Server Dashboard</title>
-            <style>
-                body { font-family: Arial, sans-serif; background: #111; color: #eee; padding: 20px; }
-                h1 { color: #cc3300; }
-                h2 { color: #d4a820; margin-top: 30px; }
-                .stat { display: inline-block; background: #222; padding: 15px 25px;
-                        margin: 10px; border-radius: 8px; text-align: center; }
-                .stat .num { font-size: 2em; font-weight: bold; color: #cc3300; }
-                table { width: 100%; border-collapse: collapse; margin-top: 10px; }
-                th { background: #222; padding: 8px; text-align: left; color: #d4a820; }
-                td { padding: 6px 8px; border-bottom: 1px solid #333; font-size: 0.85em; }
-                tr:hover td { background: #1a1a1a; }
-            </style>
-        </head>
-        <body>
-            <h1>🌿 The Cultivar — Update Server</h1>
-            <p>Current Version: <strong style="color:#d4a820">${CURRENT_VERSION}</strong></p>
-
-            <div class="stat"><div class="num">${total}</div>Registered Owners</div>
-            <div class="stat"><div class="num">${objs}</div>Tracked Objects</div>
-
-            <h2>Items In The Wild</h2>
-            <table>
-                <tr><th>Item</th><th>Owner Count</th></tr>
-                ${itemRows}
-            </table>
-
-            <h2>Recent Owners (last 50)</h2>
-            <table>
-                <tr><th>Name</th><th>Key</th><th>Items</th><th>Last Seen</th></tr>
-                ${ownerRows}
-            </table>
-        </body>
-        </html>
-    `);
-});
-
-// ----------------------------------------------------------------
-// START SERVER
-// ----------------------------------------------------------------
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () =>
-{
-    console.log("The Cultivar Update Server running on port " + PORT);
-    console.log("Current version: " + CURRENT_VERSION);
-});
+        // Re-derive pin in case object key changed after copy
+        g_scriptPin = derivePin();
+        llSetRemoteScriptAccessPin(g_scriptPin);
+        llSetTimerEvent(3.0);
+    }
+}
