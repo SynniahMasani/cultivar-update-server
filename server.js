@@ -1,6 +1,6 @@
 // ================================================================
 // THE CULTIVAR — Update Server
-// Hosted on Railway (Node.js)
+// Hosted on Render.com (Node.js)
 // ================================================================
 
 const express = require("express");
@@ -14,20 +14,39 @@ app.use(express.urlencoded({ extended: true }));
 // CONFIGURATION — Edit these values
 // ----------------------------------------------------------------
 
-// Bump this string every time you release an update
-const CURRENT_VERSION = "1.0.0";
-
-// Your SL avatar key (Synniah Masani) — only this key gets admin notifications
-const STORE_OWNER_KEY = "2b726a23-e792-40d0-8a20-baeaa49c1b03";
+// Your SL avatar key (Synniah Masani)
+const STORE_OWNER_KEY = "PASTE_YOUR_SL_AVATAR_KEY_HERE";
 
 // Simple admin password for the web dashboard
-const ADMIN_PASSWORD = "12060404us";
+const ADMIN_PASSWORD = "changeme123";
 
 // Path to persistent data file
 const DATA_FILE = "./data.json";
 
 // ----------------------------------------------------------------
-// DATA HELPERS — Reads and writes owner registry to disk
+// PER-ITEM VERSION TABLE
+// When you update specific items, only bump those version numbers.
+// Players who own other items will not be notified.
+//
+// HOW TO UPDATE:
+//   - Change the version number for the item(s) you updated
+//   - Push to GitHub — Render auto-redeploys
+//   - Only owners of that specific item will see the update dialog
+// ----------------------------------------------------------------
+const CURRENT_VERSIONS = {
+    "TC_HUD":           "1.0.0",
+    "TC_GrowLight":     "1.0.0",
+    "TC_WeedJar":       "1.0.0",
+    "TC_BaggingTable":  "1.0.0",
+    "TC_RollingTable":  "1.0.0",
+    "TC_StashBox":      "1.0.0",
+    "TC_Plant":         "1.0.0",
+    "TC_SessionObject": "1.0.0",
+    "TC_PlugBoard":     "1.0.0"
+};
+
+// ----------------------------------------------------------------
+// DATA HELPERS
 // ----------------------------------------------------------------
 
 function loadData()
@@ -55,23 +74,11 @@ function saveData(data)
 // ROUTES
 // ----------------------------------------------------------------
 
-// Health check — Railway uses this to confirm server is alive
 app.get("/", (req, res) =>
 {
-    res.send("The Cultivar Update Server is running. Version: " + CURRENT_VERSION);
+    res.send("The Cultivar Update Server is running.");
 });
 
-// ----------------------------------------------------------------
-// POST /check — Called by LSL UpdateClient on every rez
-//
-// Expected body params (sent as form data from llHTTPRequest):
-//   owner_key    — SL avatar UUID of the item owner
-//   owner_name   — Display name
-//   object_key   — UUID of the rezzed object
-//   item_name    — e.g. "TC_HUD", "TC_GrowLight"
-//   version      — Client's current version string
-//   region       — Region name the object is in
-// ----------------------------------------------------------------
 app.post("/check", (req, res) =>
 {
     const ownerKey  = req.body.owner_key  || "";
@@ -89,7 +96,6 @@ app.post("/check", (req, res) =>
     const data = loadData();
     const now  = new Date().toISOString();
 
-    // Register or update owner entry
     let ownerEntry = data.owners.find(o => o.key === ownerKey);
     if (!ownerEntry)
     {
@@ -103,7 +109,6 @@ app.post("/check", (req, res) =>
         console.log("[NEW OWNER] " + ownerName + " (" + ownerKey + ") — " + itemName);
     }
 
-    // Track which items this owner has
     if (!ownerEntry.items.includes(itemName))
     {
         ownerEntry.items.push(itemName);
@@ -111,7 +116,6 @@ app.post("/check", (req, res) =>
     ownerEntry.name     = ownerName;
     ownerEntry.lastSeen = now;
 
-    // Register or update object entry
     let objEntry = data.objects.find(o => o.key === objectKey);
     if (!objEntry)
     {
@@ -134,30 +138,24 @@ app.post("/check", (req, res) =>
 
     saveData(data);
 
-    // Version check response
-    if (version === CURRENT_VERSION)
+    // Look up the correct version for this specific item
+    const latestVersion = CURRENT_VERSIONS[itemName] || "1.0.0";
+
+    if (version === latestVersion)
     {
-        return res.send("UP_TO_DATE|" + CURRENT_VERSION);
+        return res.send("UP_TO_DATE|" + latestVersion);
     }
     else
     {
-        return res.send("UPDATE_AVAILABLE|" + CURRENT_VERSION);
+        return res.send("UPDATE_AVAILABLE|" + latestVersion);
     }
 });
 
-// ----------------------------------------------------------------
-// GET /version — Simple version check endpoint
-// LSL can poll this to just get the current version number
-// ----------------------------------------------------------------
-app.get("/version", (req, res) =>
+app.get("/versions", (req, res) =>
 {
-    res.send(CURRENT_VERSION);
+    res.json(CURRENT_VERSIONS);
 });
 
-// ----------------------------------------------------------------
-// GET /admin — Simple web dashboard (password protected)
-// Visit https://your-railway-url/admin?pw=yourpassword
-// ----------------------------------------------------------------
 app.get("/admin", (req, res) =>
 {
     if (req.query.pw !== ADMIN_PASSWORD)
@@ -169,7 +167,6 @@ app.get("/admin", (req, res) =>
     const total = data.owners.length;
     const objs  = data.objects.length;
 
-    // Build item breakdown
     const itemCounts = {};
     data.owners.forEach(o =>
     {
@@ -180,9 +177,12 @@ app.get("/admin", (req, res) =>
     });
 
     let itemRows = "";
-    Object.keys(itemCounts).forEach(item =>
+    Object.keys(CURRENT_VERSIONS).forEach(item =>
     {
-        itemRows += "<tr><td>" + item + "</td><td>" + itemCounts[item] + "</td></tr>";
+        const count = itemCounts[item] || 0;
+        itemRows += "<tr><td>" + item + "</td><td>" +
+                    CURRENT_VERSIONS[item] + "</td><td>" +
+                    count + "</td></tr>";
     });
 
     let ownerRows = "";
@@ -211,14 +211,13 @@ app.get("/admin", (req, res) =>
         </head>
         <body>
             <h1>🌿 The Cultivar — Update Server</h1>
-            <p>Current Version: <strong style="color:#d4a820">${CURRENT_VERSION}</strong></p>
 
             <div class="stat"><div class="num">${total}</div>Registered Owners</div>
             <div class="stat"><div class="num">${objs}</div>Tracked Objects</div>
 
-            <h2>Items In The Wild</h2>
+            <h2>Current Versions & Owner Counts</h2>
             <table>
-                <tr><th>Item</th><th>Owner Count</th></tr>
+                <tr><th>Item</th><th>Current Version</th><th>Owners With This Item</th></tr>
                 ${itemRows}
             </table>
 
@@ -232,12 +231,9 @@ app.get("/admin", (req, res) =>
     `);
 });
 
-// ----------------------------------------------------------------
-// START SERVER
-// ----------------------------------------------------------------
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () =>
 {
     console.log("The Cultivar Update Server running on port " + PORT);
-    console.log("Current version: " + CURRENT_VERSION);
+    console.log("Per-item versions:", CURRENT_VERSIONS);
 });
