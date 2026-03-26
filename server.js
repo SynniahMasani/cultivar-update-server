@@ -18,10 +18,10 @@ app.use(express.urlencoded({ extended: true }));
 const CURRENT_VERSION = "1.0.0";
 
 // Your SL avatar key (Synniah Masani) — only this key gets admin notifications
-const STORE_OWNER_KEY = "PASTE_YOUR_SL_AVATAR_KEY_HERE";
+const STORE_OWNER_KEY = "2b726a23-e792-40d0-8a20-baeaa49c1b03";
 
 // Simple admin password for the web dashboard
-const ADMIN_PASSWORD = "changeme123";
+const ADMIN_PASSWORD = "12060404us";
 
 // Path to persistent data file
 const DATA_FILE = "./data.json";
